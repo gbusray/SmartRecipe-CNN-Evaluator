@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 from data_preprocessing import get_data_loaders
 
-# Import all modular architectures
-from models.resnet import get_resnet50
+# Import all modular architectures (ResNet import is fully fixed!)
+from models.resnet import get_resnet50_model
 from models.mobilenet import get_mobilenet_v3
 from models.efficientnet import get_efficientnet_b1
 from models.vgg import get_vgg16
@@ -30,8 +30,9 @@ def run_batch_training(num_epochs=10):
     train_loader, val_loader = get_data_loaders()
     criterion = nn.CrossEntropyLoss()
 
+    # Dictionary of all models to train sequentially
     architectures = {
-        "ResNet50": get_resnet50,
+        "ResNet50": get_resnet50_model,
         "MobileNetV3": get_mobilenet_v3,
         "EfficientNetB1": get_efficientnet_b1,
         "VGG16": get_vgg16,
@@ -105,4 +106,5 @@ def run_batch_training(num_epochs=10):
         print(f"{name}: {acc:.2f}%")
 
 if __name__ == "__main__":
+    # Ready for the overnight 10-epoch run!
     run_batch_training(num_epochs=10)
