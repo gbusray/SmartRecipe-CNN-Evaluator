@@ -1,66 +1,73 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from data_preprocessing import get_data_loaders
-from models.efficientnet import get_efficientnet_b1
+import copy
+import time
 
-def train_and_evaluate(num_epochs=2):
+def train_with_controls(model, dataloaders, dataset_sizes, device, num_epochs=70, patience=10):
     """
-    Executes the training loop for EfficientNet-B1.
+    Executes model training with Early Stopping, Checkpointing, and LR Scheduling.
+    Architectural rationale: Isolating the training loop from the data and model 
+    instantiation ensures high reusability across different CNN architectures 
+    (ResNet, MobileNet, etc.) without duplicating logic.
     """
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"🚀 Training & Evaluating initialized on: {device}")
-
-    train_loader, val_loader = get_data_loaders()
-    model = get_efficientnet_b1(num_classes=101).to(device)
-    
     criterion = nn.CrossEntropyLoss()
-    # CRITICAL: EfficientNet-B1 classification layer is at index 1
-    optimizer = optim.Adam(model.classifier[1].parameters(), lr=0.001)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_loss = float('inf')
+    epochs_no_improve = 0
+    start_time = time.time()
 
     for epoch in range(num_epochs):
-        # --- TRAINING PHASE ---
-        model.train()
-        running_loss = 0.0
-        print(f"\n--- Epoch {epoch+1}/{num_epochs} ---")
-        
-        for i, (inputs, labels) in enumerate(train_loader):
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-            
-            if i % 50 == 49:
-                print(f"Batch {i+1} | Loss: {running_loss / 50:.4f}")
-                running_loss = 0.0
-                
-        # --- VALIDATION PHASE ---
-        model.eval()
-        correct = 0
-        total = 0
-        print("🔍 Running Validation...")
-        
-        with torch.no_grad():
-            for inputs, labels in val_loader:
+        print(f'Epoch {epoch+1}/{num_epochs}\n' + '-' * 10)
+
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()
+            else:
+                model.eval()
+
+            running_loss = 0.0
+            running_corrects = 0
+
+            for inputs, labels in dataloaders[phase]:
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-        
-        accuracy = 100 * correct / total
-        print(f"✅ Epoch {epoch+1} Validation Accuracy: {accuracy:.2f}%")
+                optimizer.zero_grad()
 
-    # --- SAVE THE MODEL ---
-    save_path = "data/efficientnetb1_food101.pth"
-    torch.save(model.state_dict(), save_path)
-    print(f"💾 Model weights successfully saved to {save_path}")
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
 
-if __name__ == "__main__":
-    train_and_evaluate(num_epochs=2)
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+            print(f'{phase.capitalize()} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+
+            if phase == 'val':
+                scheduler.step(epoch_loss)
+                if epoch_loss < best_loss:
+                    best_loss = epoch_loss
+                    best_model_wts = copy.deepcopy(model.state_dict())
+                    epochs_no_improve = 0
+                    print("--> Checkpoint saved.")
+                else:
+                    epochs_no_improve += 1
+
+        if epochs_no_improve >= patience:
+            print(f'\nEarly stopping at epoch {epoch+1}.')
+            break
+
+    time_elapsed = time.time() - start_time
+    print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    
+    model.load_state_dict(best_model_wts)
+    return model
